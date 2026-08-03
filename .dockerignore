@@ -1,0 +1,15 @@
+target
+.git
+.gitignore
+.idea
+*.iml
+.vscode
+.env
+.env.local
+README.md
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Locally-stored media uploads
+uploads
