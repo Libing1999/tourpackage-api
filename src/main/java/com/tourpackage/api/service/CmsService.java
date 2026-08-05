@@ -6,11 +6,14 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.tourpackage.api.config.CacheConfig;
 import com.tourpackage.api.dto.request.BannerRequest;
 import com.tourpackage.api.dto.request.BlogPostRequest;
 import com.tourpackage.api.dto.request.ContentBlockRequest;
@@ -84,6 +87,7 @@ public class CmsService {
     // --- public reads ----------------------------------------------------
 
     @Transactional(readOnly = true)
+    @Cacheable(CacheConfig.SITE_CONTENT)
     public SiteContentResponse getSiteContent() {
         Map<String, ContentBlockResponse> blocks = contentBlockRepository.findByActiveTrue().stream()
                 .collect(Collectors.toMap(ContentBlock::getKey, CmsService::toBlockResponse));
@@ -101,6 +105,11 @@ public class CmsService {
      * row — a page without managed metadata should fall back to its own
      * defaults, not fail to render.
      */
+    // Every server-rendered page calls this once through generateMetadata, so
+    // it is one of the hottest reads on the site. Nulls are cached too — see
+    // CacheConfig; a route with no managed row would otherwise query on every
+    // single render to learn nothing again.
+    @Cacheable(value = CacheConfig.PAGE_SEO, key = "#path")
     @Transactional(readOnly = true)
     public PageSeoResponse getSeoForPath(String path) {
         return pageSeoRepository.findByPath(path).map(CmsService::toSeoResponse).orElse(null);
@@ -146,6 +155,7 @@ public class CmsService {
                 .toList();
     }
 
+    @CacheEvict(value = {CacheConfig.SITE_CONTENT, CacheConfig.PAGE_SEO}, allEntries = true)
     public ContentBlockResponse saveBlock(UUID id, ContentBlockRequest request) {
         boolean duplicate = id == null
                 ? contentBlockRepository.existsByKey(request.key())
@@ -171,6 +181,7 @@ public class CmsService {
         return toBlockResponse(contentBlockRepository.save(block));
     }
 
+    @CacheEvict(value = {CacheConfig.SITE_CONTENT, CacheConfig.PAGE_SEO}, allEntries = true)
     public void deleteBlock(UUID id) {
         contentBlockRepository.delete(contentBlockRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Content block not found: " + id)));
@@ -183,6 +194,7 @@ public class CmsService {
         return pageSeoRepository.findAllByOrderByPathAsc().stream().map(CmsService::toSeoResponse).toList();
     }
 
+    @CacheEvict(value = {CacheConfig.SITE_CONTENT, CacheConfig.PAGE_SEO}, allEntries = true)
     public PageSeoResponse saveSeo(UUID id, PageSeoRequest request) {
         boolean duplicate = id == null
                 ? pageSeoRepository.existsByPath(request.path())
@@ -207,6 +219,7 @@ public class CmsService {
         return toSeoResponse(pageSeoRepository.save(seo));
     }
 
+    @CacheEvict(value = {CacheConfig.SITE_CONTENT, CacheConfig.PAGE_SEO}, allEntries = true)
     public void deleteSeo(UUID id) {
         pageSeoRepository.delete(pageSeoRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Page SEO not found: " + id)));
@@ -221,6 +234,7 @@ public class CmsService {
                 .toList();
     }
 
+    @CacheEvict(value = {CacheConfig.SITE_CONTENT, CacheConfig.PAGE_SEO}, allEntries = true)
     public NavLinkResponse saveNavLink(UUID id, NavLinkRequest request) {
         Instant now = Instant.now();
         NavLink link = id == null
@@ -238,6 +252,7 @@ public class CmsService {
         return toNavResponse(navLinkRepository.save(link));
     }
 
+    @CacheEvict(value = {CacheConfig.SITE_CONTENT, CacheConfig.PAGE_SEO}, allEntries = true)
     public void deleteNavLink(UUID id) {
         NavLink link = navLinkRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Nav link not found: " + id));

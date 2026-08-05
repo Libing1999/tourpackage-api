@@ -8,6 +8,25 @@ spring:
     password: ${DB_PASSWORD:tourpackage}
     hikari:
       maximum-pool-size: ${DB_POOL_SIZE:10}
+      # How close a typo has to be before global search treats it as a match,
+      # applied once per physical connection. PostgreSQL's default is 0.6, which
+      # rejects a single dropped letter in a short word: word_similarity between
+      # "tropcal" and "Bali Tropical Retreat" is 0.545. Measured on 200k
+      # synthetic rows, 0.5 recovers exactly the rows that genuinely contain the
+      # word and no others, and the trigram index still serves it as a bitmap
+      # index scan. Set here rather than in a migration because it is runtime
+      # tuning, not schema — a migration would change the setting for every
+      # other connection to the database too.
+      connection-init-sql: SET pg_trgm.word_similarity_threshold = ${SEARCH_FUZZY_THRESHOLD:0.5}
+
+  # Only contacted when CACHE_STORE or RATE_LIMIT_STORE is `redis`; the
+  # auto-configuration does not open a connection until something asks for one.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: ${REDIS_TIMEOUT:2s}
 
   jpa:
     hibernate:
@@ -51,6 +70,23 @@ server:
     context-path: /api
 
 app:
+  api:
+    version: ${API_VERSION:1.0.0}
+    # Used as the server URL in the OpenAPI document.
+    public-url: ${API_PUBLIC_URL:http://localhost:8080}
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    # `memory` counts per instance; `redis` shares the count across a fleet.
+    store: ${RATE_LIMIT_STORE:memory}
+    # Only enable behind a proxy that overwrites X-Forwarded-For. The header is
+    # client-settable, so trusting it without one lets any caller bypass every
+    # limit by varying it per request.
+    trust-forwarded-for: ${RATE_LIMIT_TRUST_PROXY:false}
+  cache:
+    store: ${CACHE_STORE:memory}
+    ttl-seconds: ${CACHE_TTL_SECONDS:60}
+  observability:
+    slow-request-ms: ${SLOW_REQUEST_MS:1000}
   frontend-url: ${FRONTEND_URL:http://localhost:3000}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
@@ -59,10 +95,21 @@ app:
     expiration-ms: ${JWT_EXPIRATION_MS:3600000}
     refresh-token-expiration-ms: ${JWT_REFRESH_EXPIRATION_MS:2592000000} # 30 days
   mail:
+    # Turns delivery off without removing the SMTP settings — useful for a demo
+    # or a load test that shouldn't mail real people. Messages are logged instead.
+    enabled: ${MAIL_ENABLED:true}
     from: ${MAIL_FROM:no-reply@tourpackage.com}
+    # Shown as the sender name, and used across the templates as the brand.
+    from-name: ${MAIL_FROM_NAME:TourPackage}
     # Where "a booking came in" notifications go. Separate from `from` so a
     # real deployment can route them to a staffed inbox.
     admin-notifications: ${MAIL_ADMIN_NOTIFICATIONS:bookings@tourpackage.com}
+    # Replies go here rather than to the no-reply `from` address — several of
+    # the templates invite a reply, so it has to reach someone.
+    reply-to: ${MAIL_REPLY_TO:support@tourpackage.com}
+    # Footer contact line and postal address.
+    support-email: ${MAIL_SUPPORT_EMAIL:support@tourpackage.com}
+    company-address: ${MAIL_COMPANY_ADDRESS:}
   security:
     max-failed-login-attempts: ${MAX_FAILED_LOGIN_ATTEMPTS:5}
     account-lock-duration-minutes: ${ACCOUNT_LOCK_DURATION_MINUTES:15}
@@ -99,19 +146,64 @@ app:
       jpeg-quality: ${IMAGE_JPEG_QUALITY:0.82}
       max-upload-bytes: ${IMAGE_MAX_UPLOAD_BYTES:10485760}
 
+springdoc:
+  # Publicly readable documentation of every endpoint is a gift to anyone
+  # probing the API. Left on by default because that is what makes it useful
+  # during development, and turned off in the production compose/profile —
+  # generate the spec in CI if a published contract is wanted.
+  api-docs:
+    enabled: ${SWAGGER_ENABLED:true}
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: ${SWAGGER_ENABLED:true}
+    path: /swagger-ui.html
+    # Alphabetical rather than declaration order, which is otherwise whatever
+    # order the classpath scan happened to produce.
+    operations-sorter: alpha
+    tags-sorter: alpha
+    display-request-duration: true
+
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # prometheus is scraped by the monitoring stack; the rest are operator
+        # tools. Everything here is read-only — no env, no heapdump, no loggers
+        # mutation endpoint, because this port is not always as private as
+        # people assume.
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: when-authorized
+      # Kubernetes-style split. Liveness answers "is this process wedged"
+      # (restart it); readiness answers "can it serve traffic right now"
+      # (take it out of rotation). Conflating them restarts a pod that was
+      # only waiting on a slow dependency.
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db
   health:
     mail:
       enabled: false
+  metrics:
+    tags:
+      application: tourpackage-api
+  observations:
+    key-values:
+      application: tourpackage-api
 
 logging:
   level:
     root: INFO
-    com.tourpackage.api: ${LOG_LEVEL:DEBUG}
+    com.tourpackage.api: ${LOG_LEVEL:INFO}
+    # One line per request, from AccessLogFilter.
+    access: INFO
+  pattern:
+    # The request id is what makes concurrent requests separable in a log, so it
+    # is in every line rather than only the access log. `-` when absent, which is
+    # anything running outside a request (startup, scheduled work).
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId:--}] %logger{36} - %msg%n"

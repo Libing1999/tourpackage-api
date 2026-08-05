@@ -6,6 +6,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -16,6 +22,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import com.fasterxml.jackson.databind.JsonMappingException.Reference;
 import com.fasterxml.jackson.databind.exc.InvalidFormatException;
@@ -113,6 +120,136 @@ public class GlobalExceptionHandler {
                 ex.getMessage(),
                 path(request));
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(body);
+    }
+
+
+    /**
+     * Wrong HTTP verb for an existing path.
+     *
+     * <p>405 rather than the 500 this produced before. The distinction matters
+     * beyond correctness: a client error reported as a server error puts a
+     * misrouted request into the same alerting bucket as a real fault.
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex, WebRequest request) {
+        String allowed = ex.getSupportedHttpMethods() == null ? ""
+                : " Allowed: " + ex.getSupportedHttpMethods().stream().map(Object::toString)
+                        .collect(Collectors.joining(", "));
+        ErrorResponse body = ErrorResponse.of(
+                HttpStatus.METHOD_NOT_ALLOWED.value(),
+                HttpStatus.METHOD_NOT_ALLOWED.getReasonPhrase(),
+                ex.getMethod() + " is not supported on this endpoint." + allowed,
+                path(request));
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(body);
+    }
+
+    /** A body this endpoint cannot read — most often a missing JSON content type. */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMediaTypeNotSupported(
+            HttpMediaTypeNotSupportedException ex, WebRequest request) {
+        String supported = ex.getSupportedMediaTypes().isEmpty() ? ""
+                : " Expected: " + ex.getSupportedMediaTypes().stream().map(Object::toString)
+                        .collect(Collectors.joining(", "));
+        ErrorResponse body = ErrorResponse.of(
+                HttpStatus.UNSUPPORTED_MEDIA_TYPE.value(),
+                HttpStatus.UNSUPPORTED_MEDIA_TYPE.getReasonPhrase(),
+                "Content type '" + ex.getContentType() + "' is not supported." + supported,
+                path(request));
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).body(body);
+    }
+
+    /**
+     * A query or path parameter of the wrong type — {@code ?page=abc}, a
+     * malformed UUID.
+     *
+     * <p>Reported as a field error so it lands in the client's form-handling
+     * path alongside body validation failures, rather than as a bare message.
+     * The offending value is not echoed back: it is attacker-controlled and this
+     * response is rendered by browsers.
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(
+            MethodArgumentTypeMismatchException ex, WebRequest request) {
+        String expected = ex.getRequiredType() == null ? "the expected type"
+                : ex.getRequiredType().getSimpleName();
+        ErrorResponse body = ErrorResponse.of(
+                HttpStatus.BAD_REQUEST.value(),
+                HttpStatus.BAD_REQUEST.getReasonPhrase(),
+                "Invalid value for '" + ex.getName() + "'.",
+                path(request),
+                Map.of(ex.getName(), "Must be a valid " + expected));
+        return ResponseEntity.badRequest().body(body);
+    }
+
+    /** A required query parameter was left out. */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErrorResponse> handleMissingParameter(
+            MissingServletRequestParameterException ex, WebRequest request) {
+        ErrorResponse body = ErrorResponse.of(
+                HttpStatus.BAD_REQUEST.value(),
+                HttpStatus.BAD_REQUEST.getReasonPhrase(),
+                "Required parameter '" + ex.getParameterName() + "' is missing.",
+                path(request),
+                Map.of(ex.getParameterName(), "This parameter is required"));
+        return ResponseEntity.badRequest().body(body);
+    }
+
+    /** Bean Validation on a request parameter rather than a request body. */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ErrorResponse> handleConstraintViolation(
+            ConstraintViolationException ex, WebRequest request) {
+        Map<String, String> fieldErrors = new LinkedHashMap<>();
+        ex.getConstraintViolations().forEach(violation -> {
+            String field = violation.getPropertyPath().toString();
+            // The path is "method.parameter"; only the parameter is meaningful
+            // to a caller, who never saw the method name.
+            fieldErrors.put(field.substring(field.lastIndexOf('.') + 1), violation.getMessage());
+        });
+
+        ErrorResponse body = ErrorResponse.of(
+                HttpStatus.BAD_REQUEST.value(),
+                HttpStatus.BAD_REQUEST.getReasonPhrase(),
+                "Validation failed",
+                path(request),
+                fieldErrors);
+        return ResponseEntity.badRequest().body(body);
+    }
+
+    /**
+     * An upload past the servlet limit.
+     *
+     * <p>413 rather than 500, and phrased in megabytes because the caller is a
+     * person choosing a file. Note this fires before any application-level size
+     * check, since the container rejects the request while reading it.
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ErrorResponse> handleUploadTooLarge(
+            MaxUploadSizeExceededException ex, WebRequest request) {
+        ErrorResponse body = ErrorResponse.of(
+                HttpStatus.PAYLOAD_TOO_LARGE.value(),
+                HttpStatus.PAYLOAD_TOO_LARGE.getReasonPhrase(),
+                "That file is too large to upload.",
+                path(request));
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(body);
+    }
+
+    /**
+     * An unmapped URL.
+     *
+     * <p>Without this, a typo'd path falls through to the catch-all below and
+     * comes back as a 500 with a stack trace in the log — so every probe, stale
+     * bookmark, and client typo reads as a server fault, both to the caller and
+     * to anything watching the error rate.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNoResource(NoResourceFoundException ex, WebRequest request) {
+        ErrorResponse body = ErrorResponse.of(
+                HttpStatus.NOT_FOUND.value(),
+                HttpStatus.NOT_FOUND.getReasonPhrase(),
+                "No endpoint exists at this path",
+                path(request));
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
     }
 
     /**

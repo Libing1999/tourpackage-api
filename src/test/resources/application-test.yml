@@ -1,0 +1,49 @@
+# Integration-test configuration.
+#
+# Runs against a real PostgreSQL, not an in-memory substitute. The schema uses
+# pg_trgm indexes, generated tsvector columns and partial indexes, and global
+# search depends on trigram operators — H2 cannot honour any of it, so a test
+# passing there would prove nothing about production. Flyway builds the schema
+# from the same migrations that build production.
+#
+# Locally this points at a database created alongside the development one; in CI
+# it points at a service container. Same migrations either way.
+spring:
+  datasource:
+    url: jdbc:postgresql://${TEST_DB_HOST:localhost}:${TEST_DB_PORT:5432}/${TEST_DB_NAME:tourpackage_test}
+    username: ${TEST_DB_USERNAME:tourpackage}
+    password: ${TEST_DB_PASSWORD:tourpackage}
+    hikari:
+      maximum-pool-size: 5
+      connection-init-sql: SET pg_trgm.word_similarity_threshold = 0.5
+
+  flyway:
+    enabled: true
+    # Rebuilt from scratch each run, so tests never inherit state from the last
+    # one — the usual cause of a suite that passes alone and fails together.
+    clean-disabled: false
+    locations: classpath:db/migration
+
+  mail:
+    host: localhost
+    port: 3025
+
+app:
+  # Off by default: shared counters across a suite make unrelated tests fail
+  # each other. The one test that covers rate limiting turns it back on.
+  rate-limit:
+    enabled: false
+  # No test should ever send a real email.
+  mail:
+    enabled: false
+  jwt:
+    secret: integration-test-secret-key-long-enough-for-hmac-sha256
+  storage:
+    local:
+      directory: ${java.io.tmpdir}/tourpackage-test-uploads
+
+logging:
+  level:
+    root: WARN
+    com.tourpackage.api: WARN
+    access: WARN

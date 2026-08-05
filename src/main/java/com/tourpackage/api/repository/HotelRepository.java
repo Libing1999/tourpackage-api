@@ -122,4 +122,19 @@ public interface HotelRepository extends JpaRepository<Hotel, UUID> {
             @Param("amenityCount") long amenityCount,
             Pageable pageable);
 
+
+    /**
+     * Slugs and last-modified dates for the sitemap.
+     *
+     * <p>Ordered by {@code updatedAt} descending so that if the sitemap ever has
+     * to be truncated, the most recently changed pages are the ones that survive.
+     */
+    @Query("""
+            SELECT new com.tourpackage.api.dto.response.SitemapEntry(h.slug, h.updatedAt)
+              FROM Hotel h
+             WHERE h.status = com.tourpackage.api.entity.ContentStatus.PUBLISHED AND h.deletedAt IS NULL
+             ORDER BY h.updatedAt DESC
+            """)
+    List<com.tourpackage.api.dto.response.SitemapEntry> findSitemapEntries();
+
 }

@@ -591,6 +591,263 @@ memory by the time it is stored, and every candidate SDK accepts bytes.
   Spring's 1 MB default would have rejected uploads before the application's own limit — and with a
   much less useful message.
 
+## Email Module
+
+Spring Mail over SMTP, with HTML templates on the classpath under
+[`resources/email/`](src/main/resources/email/). Every message is sent
+asynchronously — SMTP is a call to a third party, and a customer submitting a booking should not
+wait on it, nor should a timeout there fail a booking that is already committed.
+
+### What gets sent, and to whom
+
+| Trigger | Admin | Customer |
+|---|---|---|
+| Hotel booked | `booking-notification` | `booking-confirmation` |
+| Tour booked | `booking-notification` | `booking-confirmation` |
+| Contact form submitted | `inquiry-notification` | `inquiry-acknowledgement` |
+| Newsletter subscribed | `newsletter-notification` | — |
+| Booking status changed | — | `booking-status-update` |
+| Admin password reset | — | `password-reset` |
+| Admin email verification | — | `email-verification` |
+
+Admin mail goes to `MAIL_ADMIN_NOTIFICATIONS`, which is deliberately separate from `MAIL_FROM` so a
+deployment can route it to a staffed inbox.
+
+### Templates
+
+Each file is the body of one email; [`layout.html`](src/main/resources/email/layout.html) wraps it
+with the brand header and footer. Two placeholder forms, and the difference is the security story:
+`{{value}}` is HTML-escaped, `{{{value}}}` is not. Escaping is the default so a value that reaches a
+template without anyone thinking about it cannot inject markup — the raw form is only ever used for
+fragments the service built itself.
+
+Styles are inline and the layout is nested tables because email clients are not browsers: Outlook
+renders through Word, Gmail strips `<style>` blocks on forwarded mail, and neither flexbox nor grid
+can be relied on.
+
+### Not Thymeleaf
+
+`spring-boot-starter-thymeleaf` would auto-configure an MVC view resolver that a REST API has no use
+for, to solve what is placeholder substitution over nine files.
+[`EmailTemplateEngine`](src/main/java/com/tourpackage/api/service/EmailTemplateEngine.java) is ~150
+lines instead. The trade-off is real: no loops or conditionals in templates, so anything repeating —
+the booking details table — is built in Java and passed in as a raw fragment. A template needing a
+loop would be the signal to reconsider.
+
+### Design notes
+
+- **Every message is `multipart/alternative`.** The text part is derived from the rendered HTML
+  rather than hand-written, so there is one source of truth; a second copy of every template would
+  drift from the first the moment anyone edited one. A missing text part shows raw markup in
+  text-only clients and is a well-known spam-filter signal.
+- **`Reply-To` is not `From`.** Several templates invite a reply, and `no-reply@` is not somewhere a
+  reply can land.
+- **Delivery failures are logged, never rethrown.** The booking or enquiry is already committed;
+  losing it because an SMTP host was briefly unreachable would be far worse than a missing email.
+- **`MAIL_ENABLED=false` logs instead of sending**, so a demo or a load test can run without mailing
+  real people — and without deleting the SMTP configuration to do it.
+- **The newsletter notification follows the subscription, not the request.** Subscribing is
+  idempotent, so re-submitting the footer form sends nothing; a form that mailed the team on every
+  submission would be trivial to turn into a flood. A reactivated address is distinguished from a
+  new one because it reads differently to whoever gets the alert.
+- **Dates are written out, statuses are lowercased.** `2026-11-14` is how the API stores a date;
+  `Sat, 14 Nov 2026` is how someone reads their own check-in. And `CANCELLED` set into a sentence
+  shouts at a customer whose trip just fell through.
+- **`app.mail` binds as a record, unlike the rest of this codebase.** Nine String properties as
+  constructor parameters are nine interchangeable positions where transposing two compiles cleanly
+  and sends every customer email to the admin inbox.
+
+## Global Search
+
+One search box over hotels, packages, destinations (cities) and countries. There is no destinations
+table — a destination *is* a city, with its country and package count — so the searchable types are
+`HOTEL`, `PACKAGE`, `CITY` and `COUNTRY`.
+
+### Endpoints
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/public/search/suggest?q=` | Autocomplete. Up to 5 hits per type, grouped. Returns empty groups below 2 characters rather than an error. |
+| GET | `/public/search?q=&type=&page=&size=` | Paginated results across all types, or one. The only endpoint that counts towards popular searches. |
+| GET | `/public/search/popular?limit=` | Most-used terms. |
+
+### The indexes were already there
+
+`hotels` and `tour_packages` have carried STORED weighted `search_vector` columns with GIN indexes
+since V5 and V6, and `hotels.name`, `tour_packages.title` and `cities.name` have carried trigram
+indexes just as long. **None of it was ever queried.** The existing search used
+`LOWER(name) LIKE LOWER('%x%')`, and an index on `name` cannot serve a predicate on `lower(name)`.
+
+Measured on 200k synthetic rows:
+
+| Query shape | Plan | Buffers | Time |
+|---|---|---|---|
+| `LOWER(name) LIKE LOWER('%…%')` | Parallel Seq Scan | 2062 | 54.6 ms |
+| `name ILIKE '%…%'` | Bitmap Index Scan | 528 | 6.1 ms |
+
+So V19 adds only what was genuinely missing: a trigram index on `countries.name`, an index on
+`cities.slug`, and the `search_queries` table.
+
+### Typo tolerance
+
+Matching is `name ILIKE :pattern OR :q <% name`. The second is **word** similarity (`<%`), not
+whole-string similarity (`%`), because a short query is being compared against multi-word names: for
+"serenty" against "Bali Serenity Villas", whole-string similarity is 0.261 and falls below the 0.3
+default threshold, while word similarity is 0.625 and matches. The same trigram index serves both.
+
+The threshold is lowered to 0.5 via `connection-init-sql` (`SEARCH_FUZZY_THRESHOLD`), because the
+0.6 default rejects a single dropped letter in a short word — `word_similarity('tropcal', 'Bali
+Tropical Retreat')` is 0.545. On the 200k-row corpus, 0.5 returned exactly the rows that genuinely
+contain the word and no others, still as a bitmap index scan. It is set as runtime configuration
+rather than in a migration: a migration would change the setting for every other connection to that
+database too.
+
+### Design notes
+
+- **Native queries, not JPQL.** JPQL has no `ILIKE`, no trigram operators and no UNION, and all
+  three are load-bearing. The cost is losing constructor-expression projections, so these use
+  Spring Data interface projections instead.
+- **`:type` is never null; callers pass `'ALL'`.** PostgreSQL cannot infer the type of a null bind
+  parameter — a trap this codebase has hit more than once — and a sentinel avoids the question. It
+  also lets the planner fold unselected branches to a one-time false filter rather than scanning them.
+- **A UNION rather than four queries**, so one page of results can interleave types by relevance.
+  Autocomplete does the opposite and queries per type, so that a type with many matches cannot crowd
+  the others out of the dropdown.
+- **Ranking is deliberately coarse** — exact title, then prefix, then anything else — with word
+  similarity breaking ties inside each band. `title` is the final tiebreaker so equally-ranked rows
+  keep a stable order between pages; without it, page 2 can repeat a row from page 1.
+- **Only submitted searches are counted, and only ones that found something.** Counting autocomplete
+  would fill the list with "b", "ba", "bal" — every prefix of every real search. And a term that
+  returns nothing must never be promoted into a list of suggestions: a typo searched twice would
+  otherwise be recommended to everyone.
+- **One row per term, not one row per search.** The only question asked of `search_queries` is "what
+  are the most common terms", and a log would grow without bound to answer it. Per-search history
+  belongs in an analytics pipeline, not here.
+- **`display_term` is capitalised for display only when it is entirely lowercase.** Most people type
+  in lowercase, so the list otherwise drifts to "bali", "dubai", "paris" and reads like a bug —
+  but title-casing everything would turn "USA" into "Usa".
+- **LIKE metacharacters are escaped.** Not an injection guard, since the value is a bound parameter:
+  it is so that searching for "50%" looks for two characters rather than "50 followed by anything".
+
+## SEO Support
+
+A single endpoint, because the frontend owns everything else about SEO.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/public/seo/sitemap` | Slugs and `updatedAt` for every published hotel, package and blog post. |
+
+The XML is generated by Next.js, which is the only side that knows the site's route structure — that
+a hotel lives at `/hotels/{slug}` is a frontend fact. This endpoint supplies only what the database
+knows: what is publicly visible, and when it last changed.
+
+The projection is deliberately two fields. It is fetched for every entity on the site at once, and
+reusing the listing DTOs would pull images and joins to build a file that contains neither.
+
+`V20__seo_page_images.sql` backfills `page_seo.og_image_url`, which had been null on every row since
+the CMS migration — so every static route, homepage included, shared as a bare link with no preview.
+It also sets `no_index` on `/bookings`, which shows someone their own reservation.
+
+## Production Readiness
+
+### Observability
+
+Every request gets an id, put in the SLF4J MDC and returned as `X-Request-Id`. It appears in the log
+pattern, so the id from a bug report selects exactly the lines for that request out of an interleaved
+log. An inbound id is honoured (so a trace started upstream survives) but length-capped and stripped
+of anything but `[A-Za-z0-9._-]` first — it lands in both a log line and a response header, and
+neither should be forgeable.
+
+`AccessLogFilter` writes one line per request with status and duration; a 500 or anything slower than
+`SLOW_REQUEST_MS` is logged at WARN. Query strings are deliberately **not** logged: they carry
+password-reset and verification tokens.
+
+Actuator exposes `health`, `info`, `metrics` and `prometheus`. Health is split into liveness
+("restart this") and readiness ("stop routing to this", includes the database) — conflating them
+restarts a pod that was only waiting on a slow dependency. Only `health` is public; metrics require
+authentication, and a real deployment should bind actuator to an internal port.
+
+A custom `storage` health indicator reports whether uploads can actually be written. Its failure is
+otherwise silent: a container restarted without its volume is healthy by every other measure while
+every upload fails.
+
+### Rate limiting
+
+Fixed window, three budgets: auth 20/min (password guessing), anonymous writes 10/min (form spam),
+reads 300/min (scrapers). Runs **before** authentication, because the endpoints worth protecting are
+the ones an unauthenticated caller can reach.
+
+`X-Forwarded-For` is only trusted when `RATE_LIMIT_TRUST_PROXY=true`. The header is client-settable,
+so trusting it without a proxy in front lets any caller bypass every limit — and exhaust the store's
+key space while doing it.
+
+### Redis-ready
+
+Caching and rate limiting are both written against an interface with an in-memory default and a Redis
+implementation selected by configuration. Nothing in the calling code changes. This matters because
+the in-memory versions are **per JVM**: N instances behind a load balancer allow N times the
+configured rate limit and hold N divergent caches. `CACHE_STORE=redis` and `RATE_LIMIT_STORE=redis`
+make both shared.
+
+Redis cache values are JSON, not JDK serialization — the cached types are DTOs that change shape
+between releases, and a JDK-serialized cache fails to deserialize across a deploy rather than simply
+missing.
+
+### Caching
+
+`@Cacheable` on the read paths every page hit touches: site content, page SEO, settings, destinations,
+FAQs, popular searches. TTL is 60s by default and short on purpose — these sit in front of content an
+admin edits and then immediately reloads the site to check. Admin writes evict the relevant caches, so
+an edit is visible immediately rather than after the TTL.
+
+### Startup safety check
+
+Refuses to start under a `prod` profile with the development JWT secret, a wildcard or localhost CORS
+origin, a localhost storage URL, or rate limiting disabled. It fails hard rather than warning because
+the failure it prevents is silent: the application starts perfectly and signs tokens with a secret
+that is in the repository. Outside production the same checks only warn — a developer should not have
+to invent secrets to run the app.
+
+### Exception handling
+
+Auditing the handlers by probing every failure mode found **six cases returning 500 for what were
+client errors**: wrong HTTP method, wrong content type, a non-numeric path parameter, a malformed
+UUID, a missing required parameter, and an oversized upload. Each one also logged a stack trace, so
+ordinary bad requests looked identical to real faults in the logs and error metrics. All six now
+return the correct 4xx with a field-level message, and none echo the offending value back.
+
+### Tests
+
+63 tests. Unit tests cover pure logic — pricing rounding, template escaping, the plain-text
+derivation, search normalisation and LIKE escaping, rate-limit windowing under 50 concurrent threads,
+and the startup checks. Integration tests run the whole stack against a **real PostgreSQL**: the
+schema uses `pg_trgm` indexes, generated `tsvector` columns and trigram operators, so a test passing
+against an in-memory database would prove nothing. Flyway builds the test schema from the same
+migrations that build production.
+
+Rate limiting is off for the suite and re-enabled for the one class that tests it — shared counters
+otherwise make unrelated tests fail each other.
+
+### API documentation
+
+springdoc at `/swagger-ui.html`, split into `public` and `admin` groups. One flat list of ~90
+endpoints hides the single most important distinction: which need a token. `SWAGGER_ENABLED=false`
+turns both the UI and the JSON off for production.
+
+### CI
+
+`.github/workflows/ci.yml` compiles, tests against a PostgreSQL service container, uploads reports
+(on failure too — that is when they are wanted), packages the jar, and builds the Docker image
+without pushing it.
+
+### Docker
+
+Runs as a non-root user with the upload directory created and owned in the image. `MaxRAMPercentage`
+rather than a fixed heap, because the JVM otherwise sizes its heap from the host's memory rather than
+the container limit and gets OOM-killed on a large box. `ExitOnOutOfMemoryError` turns an exhausted
+heap into a restart rather than a process that stays up serving errors. `HEALTHCHECK` hits the
+readiness probe.
+
 ## Getting Started
 
 ### Prerequisites
@@ -643,7 +900,9 @@ CORS origins, and SMTP settings. `MAIL_ADMIN_NOTIFICATIONS` sets where new-booki
 `CHILD_PRICE_PERCENT` sets a child's share of the adult package rate (default 70). The
 `STORAGE_*`, `IMAGE_*` and `MULTIPART_*` variables configure media uploads — note that
 `STORAGE_PUBLIC_BASE_URL` must be an absolute URL the browser can reach, since uploaded images are
-rendered by the frontend on a different origin.
+rendered by the frontend on a different origin. The `MAIL_*` variables cover the sender identity,
+where admin notifications go, the reply-to and support addresses, and `MAIL_ENABLED` to suppress
+delivery entirely.
 
 ## Docker
 

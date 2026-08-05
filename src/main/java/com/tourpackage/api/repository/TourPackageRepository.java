@@ -136,4 +136,19 @@ public interface TourPackageRepository extends JpaRepository<TourPackage, UUID> 
             @Param("search") String search,
             Pageable pageable);
 
+
+    /**
+     * Slugs and last-modified dates for the sitemap.
+     *
+     * <p>Ordered by {@code updatedAt} descending so that if the sitemap ever has
+     * to be truncated, the most recently changed pages are the ones that survive.
+     */
+    @Query("""
+            SELECT new com.tourpackage.api.dto.response.SitemapEntry(p.slug, p.updatedAt)
+              FROM TourPackage p
+             WHERE p.status = com.tourpackage.api.entity.ContentStatus.PUBLISHED AND p.deletedAt IS NULL
+             ORDER BY p.updatedAt DESC
+            """)
+    List<com.tourpackage.api.dto.response.SitemapEntry> findSitemapEntries();
+
 }

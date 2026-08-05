@@ -5,11 +5,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.tourpackage.api.config.CacheConfig;
 import com.tourpackage.api.dto.request.FaqRequest;
 import com.tourpackage.api.dto.request.TestimonialRequest;
 import com.tourpackage.api.dto.response.CustomerResponse;
@@ -168,6 +170,7 @@ public class AdminContentService {
                 .toList();
     }
 
+    @CacheEvict(value = CacheConfig.FAQS, allEntries = true)
     public FaqAdminResponse createFaq(FaqRequest request) {
         Instant now = Instant.now();
         Faq faq = Faq.builder()
@@ -183,6 +186,7 @@ public class AdminContentService {
         return toFaqResponse(faqRepository.save(faq));
     }
 
+    @CacheEvict(value = CacheConfig.FAQS, allEntries = true)
     public FaqAdminResponse updateFaq(UUID id, FaqRequest request) {
         Faq faq = faqRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("FAQ not found: " + id));
@@ -197,6 +201,7 @@ public class AdminContentService {
         return toFaqResponse(faqRepository.save(faq));
     }
 
+    @CacheEvict(value = CacheConfig.FAQS, allEntries = true)
     public void deleteFaq(UUID id) {
         Faq faq = faqRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("FAQ not found: " + id));
@@ -217,6 +222,7 @@ public class AdminContentService {
                 .toList();
     }
 
+    @CacheEvict(value = CacheConfig.SETTINGS, allEntries = true)
     public List<SettingResponse> updateSettings(Map<String, String> values, UUID updatedBy) {
         List<Setting> all = settingRepository.findAll();
 

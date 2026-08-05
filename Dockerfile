@@ -29,4 +29,19 @@ COPY --from=builder --chown=spring:spring /workspace/target/tourpackage-api.jar 
 
 EXPOSE 8080
 
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+# Reports to the orchestrator whether this instance can serve traffic. The
+# readiness group includes the database, so a container that started but cannot
+# reach Postgres is correctly reported as not ready rather than as healthy.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/api/actuator/health/readiness | grep -q '"status":"UP"' || exit 1
+
+# MaxRAMPercentage rather than a fixed -Xmx: the JVM would otherwise size its
+# heap from the host's memory, not the container limit, and get OOM-killed by
+# the runtime on a box far larger than its cgroup allows.
+# ExitOnOutOfMemoryError makes an exhausted heap a restart rather than a process
+# that stays up serving errors.
+ENTRYPOINT ["java", \
+  "-XX:MaxRAMPercentage=75.0", \
+  "-XX:+ExitOnOutOfMemoryError", \
+  "-Djava.security.egd=file:/dev/./urandom", \
+  "-jar", "/app/app.jar"]

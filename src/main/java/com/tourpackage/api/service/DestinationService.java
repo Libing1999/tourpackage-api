@@ -4,10 +4,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.tourpackage.api.config.CacheConfig;
 import com.tourpackage.api.dto.response.DestinationResponse;
 import com.tourpackage.api.repository.CityRepository;
 import com.tourpackage.api.repository.TourPackageRepository;
@@ -24,6 +26,7 @@ public class DestinationService {
         this.tourPackageRepository = tourPackageRepository;
     }
 
+    @Cacheable(value = CacheConfig.DESTINATIONS, key = "'popular:' + #limit")
     public List<DestinationResponse> getPopularDestinations(int limit) {
         return withPackageCounts(cityRepository.findPopularDestinations(PageRequest.of(0, limit)));
     }
@@ -31,6 +34,7 @@ public class DestinationService {
     /** Every active city — backs the "destination" filter dropdown on the
      * package/hotel listing pages, which needs the full list rather than the
      * popular-only subset the homepage shows. */
+    @Cacheable(value = CacheConfig.DESTINATIONS, key = "'all'")
     public List<DestinationResponse> getAllDestinations() {
         return withPackageCounts(cityRepository.findAllActiveDestinations());
     }

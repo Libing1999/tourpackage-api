@@ -52,4 +52,19 @@ public interface BlogPostRepository extends JpaRepository<BlogPost, UUID> {
 
     boolean existsBySlugAndIdNot(String slug, UUID id);
 
+
+    /**
+     * Slugs and last-modified dates for the sitemap.
+     *
+     * <p>Ordered by {@code updatedAt} descending so that if the sitemap ever has
+     * to be truncated, the most recently changed pages are the ones that survive.
+     */
+    @Query("""
+            SELECT new com.tourpackage.api.dto.response.SitemapEntry(b.slug, b.updatedAt)
+              FROM BlogPost b
+             WHERE b.status = com.tourpackage.api.entity.ContentStatus.PUBLISHED
+             ORDER BY b.updatedAt DESC
+            """)
+    List<com.tourpackage.api.dto.response.SitemapEntry> findSitemapEntries();
+
 }
