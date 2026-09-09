@@ -23,7 +23,7 @@ public interface TourPackageRepository extends JpaRepository<TourPackage, UUID> 
             SELECT new com.tourpackage.api.dto.response.TourPackageSummaryResponse(
                 tp.id, tp.title, tp.slug, c.name, co.name, pi.url,
                 tp.durationDays, tp.durationNights, tp.price, tp.discountPrice,
-                tp.ratingAverage, tp.ratingCount)
+                tp.ratingAverage, tp.ratingCount, tp.currencyCode)
             FROM TourPackage tp
             JOIN City c ON c.id = tp.cityId
             JOIN Country co ON co.id = tp.countryId
@@ -110,7 +110,7 @@ public interface TourPackageRepository extends JpaRepository<TourPackage, UUID> 
             SELECT new com.tourpackage.api.dto.response.TourPackageSummaryResponse(
                 tp.id, tp.title, tp.slug, c.name, co.name, pi.url,
                 tp.durationDays, tp.durationNights, tp.price, tp.discountPrice,
-                tp.ratingAverage, tp.ratingCount)
+                tp.ratingAverage, tp.ratingCount, tp.currencyCode)
             FROM TourPackage tp
             JOIN City c ON c.id = tp.cityId
             JOIN Country co ON co.id = tp.countryId

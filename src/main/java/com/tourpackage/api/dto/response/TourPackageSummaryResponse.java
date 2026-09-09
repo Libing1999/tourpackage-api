@@ -15,6 +15,7 @@ public record TourPackageSummaryResponse(
         BigDecimal price,
         BigDecimal discountPrice,
         BigDecimal ratingAverage,
-        int ratingCount
+        int ratingCount,
+        String currencyCode
 ) {
 }
