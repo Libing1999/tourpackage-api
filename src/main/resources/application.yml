@@ -98,17 +98,17 @@ app:
     # Turns delivery off without removing the SMTP settings — useful for a demo
     # or a load test that shouldn't mail real people. Messages are logged instead.
     enabled: ${MAIL_ENABLED:true}
-    from: ${MAIL_FROM:no-reply@tourpackage.com}
+    from: ${MAIL_FROM:100sky.ladakh@gmail.com}
     # Shown as the sender name, and used across the templates as the brand.
-    from-name: ${MAIL_FROM_NAME:TourPackage}
-    # Where "a booking came in" notifications go. Separate from `from` so a
-    # real deployment can route them to a staffed inbox.
-    admin-notifications: ${MAIL_ADMIN_NOTIFICATIONS:bookings@tourpackage.com}
+    from-name: ${MAIL_FROM_NAME:Tour Leh Ladakh}
+    # Where "a booking came in"/enquiry notifications go. Separate from `from` so
+    # a real deployment can route them to a staffed inbox.
+    admin-notifications: ${MAIL_ADMIN_NOTIFICATIONS:100sky.ladakh@gmail.com}
     # Replies go here rather than to the no-reply `from` address — several of
     # the templates invite a reply, so it has to reach someone.
-    reply-to: ${MAIL_REPLY_TO:support@tourpackage.com}
+    reply-to: ${MAIL_REPLY_TO:100sky.ladakh@gmail.com}
     # Footer contact line and postal address.
-    support-email: ${MAIL_SUPPORT_EMAIL:support@tourpackage.com}
+    support-email: ${MAIL_SUPPORT_EMAIL:100sky.ladakh@gmail.com}
     company-address: ${MAIL_COMPANY_ADDRESS:}
   security:
     max-failed-login-attempts: ${MAX_FAILED_LOGIN_ATTEMPTS:5}
