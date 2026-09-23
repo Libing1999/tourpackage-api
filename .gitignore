@@ -28,15 +28,14 @@ bin/
 /.nb-gradle/
 
 ### VS Code ###
-.vscode/
 
 ### macOS ###
 .DS_Store
 
 ### Environment ###
-.env
-.env.local
 !.env.example
 
 # Locally-stored media uploads (STORAGE_PROVIDER=local)
 uploads/
+config.bat
+node_modules
