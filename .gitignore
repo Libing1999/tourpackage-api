@@ -28,7 +28,6 @@ bin/
 /.nb-gradle/
 
 ### VS Code ###
-.vscode/
 
 ### macOS ###
 .DS_Store
@@ -38,5 +37,5 @@ bin/
 
 # Locally-stored media uploads (STORAGE_PROVIDER=local)
 uploads/
-config.bat
 node_modules
+config.bat
